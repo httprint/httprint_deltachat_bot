@@ -114,7 +114,7 @@ class BotTests(unittest.TestCase):
             icon = Path(directory) / "avatar.png"
             icon.write_bytes(b"avatar")
             bot = HttprintDeltaChatBot(
-                "http://example.test", directory, bot_name="Print bot", bot_icon=str(icon)
+                "http://example.test", directory, bot_name="Print bot", bot_icon="avatar.png"
             )
             account = Mock()
             account.get_config.return_value = "Old name"
@@ -154,6 +154,40 @@ class BotTests(unittest.TestCase):
             bot.configure_profile(account)
             account.set_avatar.assert_called_once_with(str(explicit_icon))
 
+    def test_icon_path_must_stay_inside_data_directory(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / "data"
+            root.mkdir()
+            outside = Path(parent) / "outside.png"
+            outside.write_bytes(b"image")
+            (root / "link.png").symlink_to(outside)
+            (root / "icon.png").symlink_to(outside)
+            account = Mock()
+            account.get_config.return_value = "HTTPrint"
+            for icon in ("../outside.png", str(outside), "link.png", ""):
+                with self.subTest(icon=icon):
+                    bot = HttprintDeltaChatBot(
+                        "http://example.test", str(root), bot_icon=icon
+                    )
+                    with self.assertRaisesRegex(ValueError, "inside the data directory"):
+                        bot.configure_profile(account)
+            account.set_avatar.assert_not_called()
+
+    def test_icon_path_accepts_nested_files_inside_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "images"
+            nested.mkdir()
+            icon = nested / "avatar.png"
+            icon.write_bytes(b"image")
+            account = Mock()
+            account.get_config.return_value = "HTTPrint"
+            bot = HttprintDeltaChatBot(
+                "http://example.test", directory, bot_icon="images/avatar.png"
+            )
+            bot.configure_profile(account)
+            account.set_avatar.assert_called_once_with(str(icon))
+
     def test_account_directory_is_always_accounts_subdirectory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -176,7 +210,7 @@ class BotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bot = HttprintDeltaChatBot("http://example.test", directory)
             account = Mock()
-            account.get_qr_code.return_value = "invite"
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=token&a=one&n=bot"
             account.list_transports.return_value = [{"addr": "bot@example.org"}]
             account.get_config.return_value = "bot"
             rpc = Mock()
@@ -185,12 +219,17 @@ class BotTests(unittest.TestCase):
                 '<rect width="10" height="10"/></svg>'
             )
             bot.create_contact_qr(account, rpc)
-            svg = Path(directory) / "contact-qr.svg"
-            png = Path(directory) / "contact-qr.png"
+            svg = Path(directory) / "contact.svg"
+            png = Path(directory) / "contact.png"
+            text = Path(directory) / "contact.txt"
+            self.assertEqual(text.read_text(encoding="utf-8"), account.get_qr_code.return_value)
+            rpc.create_qr_svg.assert_called_once_with(account.get_qr_code.return_value)
             self.assertTrue(png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
             self.assertEqual(struct.unpack(">II", png.read_bytes()[16:24]), (2048, 2048))
             self.assertEqual(svg.stat().st_mode & 0o777, 0o600)
             self.assertEqual(png.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(text.stat().st_mode & 0o777, 0o600)
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=another&a=one&n=bot"
             bot.create_contact_qr(account, rpc)
             self.assertEqual(rpc.create_qr_svg.call_count, 1)
             png.unlink()
@@ -198,12 +237,73 @@ class BotTests(unittest.TestCase):
             self.assertEqual(rpc.create_qr_svg.call_count, 2)
             bot.create_contact_qr(account, rpc, force=True)
             self.assertEqual(rpc.create_qr_svg.call_count, 3)
-            account.list_transports.return_value = [{"addr": "bot@other.example"}]
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=third&a=other&n=bot"
             bot.create_contact_qr(account, rpc)
             self.assertEqual(rpc.create_qr_svg.call_count, 4)
-            account.get_config.return_value = "new name"
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=fourth&a=other&n=new"
             bot.create_contact_qr(account, rpc)
             self.assertEqual(rpc.create_qr_svg.call_count, 5)
+            text.unlink()
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=fifth&a=other&n=new"
+            bot.create_contact_qr(account, rpc)
+            self.assertEqual(text.read_text(encoding="utf-8"), account.get_qr_code.return_value)
+            rpc.create_qr_svg.assert_called_with(account.get_qr_code.return_value)
+            self.assertEqual(rpc.create_qr_svg.call_count, 6)
+
+    def test_incomplete_invite_update_is_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bot = HttprintDeltaChatBot("http://example.test", directory)
+            account = Mock()
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id&s=token&a=one&n=bot"
+            account.list_transports.return_value = [{"addr": "bot@example.org"}]
+            account.get_config.return_value = "bot"
+            rpc = Mock()
+            rpc.create_qr_svg.return_value = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'
+            )
+            bot.create_contact_qr(account, rpc)
+            write = bot.write_private
+
+            def failing_write(path, content):
+                if path.name == "contact.txt":
+                    raise OSError("write failed")
+                write(path, content)
+
+            with patch.object(bot, "write_private", side_effect=failing_write):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    bot.create_contact_qr(account, rpc, force=True)
+            self.assertFalse((Path(directory) / "contact.txt").exists())
+            bot.create_contact_qr(account, rpc)
+            self.assertEqual(rpc.create_qr_svg.call_count, 3)
+
+    def test_invalid_contact_invitation_is_not_silently_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bot = HttprintDeltaChatBot("http://example.test", directory)
+            account = Mock()
+            account.get_qr_code.return_value = "https://i.delta.chat/#key&i=id"
+            rpc = Mock()
+            with self.assertRaisesRegex(RuntimeError, "invalid contact invitation"):
+                bot.create_contact_qr(account, rpc)
+            rpc.create_qr_svg.assert_not_called()
+
+    def test_real_delta_chat_invitation_tokens_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+            with patch.dict(os.environ, {"PATH": path}), Rpc(accounts_dir=directory) as rpc:
+                account = DeltaChat(rpc).add_account()
+                account.add_pseudo_transport("bot@example.org")
+                account.set_config("configured_addr", "bot@example.org")
+                first = account.get_qr_code()
+                second = account.get_qr_code()
+                self.assertNotEqual(first, second)
+                self.assertIsNotNone(HttprintDeltaChatBot.contact_identity(first))
+                self.assertEqual(
+                    HttprintDeltaChatBot.contact_identity(first),
+                    HttprintDeltaChatBot.contact_identity(second),
+                )
+            rpc.process.wait(timeout=10)
+            rpc.process.stdout.close()
+            rpc.process.stderr.close()
 
     def test_message_deleted_before_upload_with_open_attachment(self):
         with tempfile.TemporaryDirectory() as directory:

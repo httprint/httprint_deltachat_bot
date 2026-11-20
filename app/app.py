@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import hashlib
 import json
 import logging
 import os
@@ -50,6 +49,14 @@ class HttprintDeltaChatBot:
                 os.replace(temp_path, path)
             finally:
                 temp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def contact_identity(invite: str) -> tuple[str, ...] | None:
+        parts = invite.split("&")
+        tokens = [part for part in parts if part.startswith("s=")]
+        if len(tokens) != 1 or not tokens[0][2:]:
+            return None
+        return tuple(part for part in parts if not part.startswith("s="))
 
     def __init__(
         self, httprint_host: str, accounts_dir: str,
@@ -116,17 +123,15 @@ class HttprintDeltaChatBot:
     def configure_profile(self, account) -> None:
         if account.get_config("displayname") != self.bot_name:
             account.set_config("displayname", self.bot_name)
-        if self.bot_icon:
-            icon = Path(self.bot_icon).expanduser().resolve(strict=True)
-            if not icon.is_file():
-                raise ValueError("BOT_ICON must point to an image file")
-        else:
-            icon = self.accounts_dir / "icon.png"
-            if not icon.exists():
-                return
-            if not icon.is_file():
-                raise ValueError("Default icon.png must be an image file")
-            icon = icon.resolve(strict=True)
+        data_dir = self.accounts_dir.resolve()
+        icon = data_dir / (self.bot_icon or "icon.png")
+        if not self.bot_icon and not icon.exists() and not icon.is_symlink():
+            return
+        icon = icon.resolve(strict=True)
+        if not icon.is_relative_to(data_dir):
+            raise ValueError("BOT_ICON must be inside the data directory")
+        if not icon.is_file():
+            raise ValueError("BOT_ICON must point to an image file")
         account.set_avatar(str(icon))
 
     def configure_relays(self, account) -> None:
@@ -179,18 +184,21 @@ class HttprintDeltaChatBot:
         self.write_private(state_path, json.dumps(mapping, sort_keys=True).encode())
 
     def create_contact_qr(self, account, rpc, force: bool = False) -> None:
-        svg_path = self.accounts_dir / "contact-qr.svg"
-        png_path = self.accounts_dir / "contact-qr.png"
-        state_path = self.accounts_dir / "contact-qr.sha256"
-        addresses = sorted(transport["addr"] for transport in account.list_transports())
-        identity = json.dumps([addresses, account.get_config("displayname")])
-        identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        svg_path = self.accounts_dir / "contact.svg"
+        png_path = self.accounts_dir / "contact.png"
+        text_path = self.accounts_dir / "contact.txt"
+        invite = account.get_qr_code()
+        if not invite:
+            raise RuntimeError("Delta Chat did not return a contact invitation")
+        identity = self.contact_identity(invite)
+        if identity is None:
+            raise RuntimeError("Delta Chat returned an invalid contact invitation")
         if not force and all(
-            path.is_file() and path.stat().st_size for path in (svg_path, png_path)
-        ) and state_path.is_file() and state_path.read_text(encoding="ascii") == identity_hash:
+            path.is_file() and path.stat().st_size for path in (svg_path, png_path, text_path)
+        ) and self.contact_identity(text_path.read_text(encoding="utf-8")) == identity:
             return
 
-        svg = rpc.create_qr_svg(account.get_qr_code())
+        svg = rpc.create_qr_svg(invite)
         if not svg:
             raise RuntimeError("Delta Chat did not return a contact QR code")
         png = cairosvg.svg2png(
@@ -198,11 +206,13 @@ class HttprintDeltaChatBot:
         )
         if not isinstance(png, bytes) or not png:
             raise RuntimeError("Failed to render Delta Chat contact QR as PNG")
-        svg_path.unlink(missing_ok=True)
-        png_path.unlink(missing_ok=True)
-        for path, content in ((svg_path, svg.encode("utf-8")), (png_path, png)):
+        text_path.unlink(missing_ok=True)
+        for path, content in (
+            (svg_path, svg.encode("utf-8")),
+            (png_path, png),
+            (text_path, invite.encode("utf-8")),
+        ):
             self.write_private(path, content)
-        self.write_private(state_path, identity_hash.encode("ascii"))
         logger.info("Delta Chat contact QR created in %s", self.accounts_dir)
 
     def handle_message(self, account, msg_id: int):
