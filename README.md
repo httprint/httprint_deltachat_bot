@@ -4,17 +4,12 @@ Delta Chat bot for uploading files to an HTTPrint server. By default, Delta Chat
 selects an available Chatmail relay; no email address or password is needed.
 Chatmail uses email protocols internally.
 
-The bot stores its Delta Chat identity, encryption keys, sessions, and
-attachments in `app/data` (or `DELTACHAT_ACCOUNTS_DIR`). On first startup it
+The bot stores its Delta Chat identity, encryption keys and sessions in
+`app/data` (or `DELTACHAT_ACCOUNTS_DIR`). On first startup it
 creates `contact.svg`, `contact.png`, and `contact.txt` in that
 directory. Share a QR or the invitation link in the text file with users to
-add the bot. If any of these files is missing, or the invitation identity,
-relays or name change, all three are regenerated together.
-Delta Chat generates a new authentication token whenever an invitation is
-requested; the bot ignores that token when comparing invitations so the
-existing QR and link stay unchanged if the rest of the invitation is unchanged.
-Delta Chat accounts are always stored in the `accounts` subdirectory. The QR
-files, relay state and optional `icon.png` stay directly in the data directory.
+add the bot.
+The QR files, relay state and optional `icon.png` stay directly in the data directory.
 Keep this directory private and backed up: losing it means losing the bot's
 identity. In Docker, this directory is a persistent volume.
 
@@ -26,7 +21,7 @@ Add the following service to your `docker-compose.yml` file:
 
 ```yaml
   httprint_delta_bot:
-    build: https://github.com/httprint/httprint_telegram_bot.git
+    build: https://github.com/httprint/httprint_deltachat_bot.git
     container_name: httprint_delta_bot  # optional
     environment:
       - HTTPRINT_HOST=http://httprint.example.com:7777 # optional; defaults to http://httprint:7777
@@ -47,12 +42,9 @@ volumes:
   * `BOT_NAME` sets the profile display name; it defaults to `HTTPrint`. `BOT_ICON` optionally names a profile image inside the data directory. Relative paths are resolved from that directory; absolute paths must also remain inside it, including after resolving symbolic links. Place the image in the mounted data volume when using Docker. If `BOT_ICON` is omitted or empty, the bot uses `icon.png` in the data directory when present; otherwise it preserves the existing profile image. The image is applied at startup, so restart the bot after changing it. The QR retains the Delta Chat logo.
   * The first startup requires internet access to the selected Chatmail relays. If registration is interrupted, missing transports are added on the next start.
   * `HTTPRINT_HOST` is your httprint server's URI/URL. If run in the same docker-compose stack, name your httprint service `httprint` and omit this env var.
-  * The bot marks incoming messages as read and asks Delta Chat to delete them locally and from the mail server before sending opened attachments to HTTPrint. Bot replies are deleted after Delta Chat confirms they were sent; pending or failed replies are kept. On startup, previously sent replies are cleaned up as well. If deletion fails, the bot reports the error and stops rather than continuing the upload.
-  * Delta Chat stores incoming attachments temporarily on disk. The bot requests native housekeeping every 10 minutes by resetting Delta Chat's housekeeping timestamp and waking its network scheduler; execution may be delayed when the relay is offline. Native housekeeping preserves referenced files and unreferenced files created, modified, or accessed in the last hour, so removal is not immediate or guaranteed within a fixed time. The relay, HTTPrint, backups, SQLite storage and logs may retain data independently. This is not a guarantee of forensic erasure.
 
 Send a file to the Delta Chat account.
-The bot sends the original filename reported by Delta Chat to HTTPrint, when
-available; otherwise it uses the local blob filename.
+The bot sends the filename reported by Delta Chat to HTTPrint.
 
 Add print options to the message text:
 
@@ -67,7 +59,7 @@ Add print options to the message text:
 
 # License and copyright
 
-Copyright 2023 itec <itec@ventuordici.org>
+Copyright 2026 itec <itec@ventuordici.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
