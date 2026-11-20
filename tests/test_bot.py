@@ -44,6 +44,39 @@ class FakeAccount:
 
 
 class BotTests(unittest.TestCase):
+    def test_housekeeping_is_requested_every_ten_minutes(self):
+        account = Mock()
+        deltachat = Mock()
+        stop = Mock()
+        stop.wait.side_effect = [False, False, True]
+        actions = Mock()
+        actions.attach_mock(account.set_config, "set_config")
+        actions.attach_mock(deltachat.maybe_network, "maybe_network")
+
+        HttprintDeltaChatBot.request_periodic_housekeeping(account, deltachat, stop)
+
+        self.assertEqual(stop.wait.call_args_list, [call(600), call(600), call(600)])
+        self.assertEqual(actions.mock_calls, [
+            call.set_config("last_housekeeping", None), call.maybe_network(),
+            call.set_config("last_housekeeping", None), call.maybe_network(),
+        ])
+
+    def test_housekeeping_rpc_failures_are_reported_and_retried(self):
+        for failing_method in ("set_config", "maybe_network"):
+            with self.subTest(failing_method=failing_method):
+                account = Mock()
+                deltachat = Mock()
+                stop = Mock()
+                stop.wait.side_effect = [False, False, True]
+                method = account.set_config if failing_method == "set_config" else deltachat.maybe_network
+                method.side_effect = [JsonRpcError("unavailable"), None]
+                with self.assertLogs("app", level="ERROR") as logs:
+                    HttprintDeltaChatBot.request_periodic_housekeeping(account, deltachat, stop)
+                self.assertIn("Failed to request Delta Chat housekeeping", logs.output[0])
+                self.assertEqual(method.call_count, 2)
+                self.assertEqual(deltachat.maybe_network.call_count,
+                                 1 if failing_method == "set_config" else 2)
+
     def test_relays_are_registered_once_and_partial_setup_resumes(self):
         with tempfile.TemporaryDirectory() as directory:
             bot = HttprintDeltaChatBot("http://example.test", directory, TEST_RELAYS)

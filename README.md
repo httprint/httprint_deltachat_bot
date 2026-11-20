@@ -48,7 +48,7 @@ volumes:
   * The first startup requires internet access to the selected Chatmail relays. If registration is interrupted, missing transports are added on the next start.
   * `HTTPRINT_HOST` is your httprint server's URI/URL. If run in the same docker-compose stack, name your httprint service `httprint` and omit this env var.
   * The bot marks incoming messages as read and asks Delta Chat to delete them locally and from the mail server before sending opened attachments to HTTPrint. Bot replies are deleted after Delta Chat confirms they were sent; pending or failed replies are kept. On startup, previously sent replies are cleaned up as well. If deletion fails, the bot reports the error and stops rather than continuing the upload.
-  * Delta Chat stores incoming attachments temporarily on disk. Its native housekeeping removes unreferenced files, preserving shared files such as profile images; it does not guarantee immediate removal. The relay, HTTPrint, backups, SQLite storage and logs may retain data independently. This is not a guarantee of forensic erasure.
+  * Delta Chat stores incoming attachments temporarily on disk. The bot requests native housekeeping every 10 minutes by resetting Delta Chat's housekeeping timestamp and waking its network scheduler; execution may be delayed when the relay is offline. Native housekeeping preserves referenced files and unreferenced files created, modified, or accessed in the last hour, so removal is not immediate or guaranteed within a fixed time. The relay, HTTPrint, backups, SQLite storage and logs may retain data independently. This is not a guarantee of forensic erasure.
 
 Send a file to the Delta Chat account.
 The bot sends the original filename reported by Delta Chat to HTTPrint, when

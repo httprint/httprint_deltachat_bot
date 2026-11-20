@@ -6,9 +6,11 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from threading import Event, Thread
 
 import cairosvg
 from deltachat_rpc_client import (
+    Account,
     DeltaChat,
     EventType,
     JsonRpcError,
@@ -20,6 +22,9 @@ from deltachat_rpc_client.const import MessageState
 from httprint import Httprint
 
 logger = logging.getLogger(__name__)
+
+HOUSEKEEPING_INTERVAL_SECONDS = 10 * 60
+
 
 class DeltaRpcEventLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -89,17 +94,39 @@ class HttprintDeltaChatBot:
 
             pending_replies = self.cleanup_sent_messages(account)
             account.start_io()
-            logger.info("Delta Chat bot is running")
-            while True:
-                event = account.wait_for_event()
-                if event.kind == EventType.INCOMING_MSG:
-                    reply = self.handle_message(account, event.msg_id)
-                    if reply is not None:
-                        pending_replies.add(reply.id)
-                elif event.kind == EventType.MSG_DELIVERED and event.msg_id in pending_replies:
-                    message = account.get_message_by_id(event.msg_id)
-                    self.delete_message(account, message, event.msg_id)
-                    pending_replies.remove(event.msg_id)
+            stop_housekeeping = Event()
+            housekeeping_thread = Thread(
+                target=self.request_periodic_housekeeping,
+                args=(account, deltachat, stop_housekeeping),
+                name="deltachat-housekeeping",
+            )
+            housekeeping_thread.start()
+            try:
+                logger.info("Delta Chat bot is running")
+                while True:
+                    event = account.wait_for_event()
+                    if event.kind == EventType.INCOMING_MSG:
+                        reply = self.handle_message(account, event.msg_id)
+                        if reply is not None:
+                            pending_replies.add(reply.id)
+                    elif event.kind == EventType.MSG_DELIVERED and event.msg_id in pending_replies:
+                        message = account.get_message_by_id(event.msg_id)
+                        self.delete_message(account, message, event.msg_id)
+                        pending_replies.remove(event.msg_id)
+            finally:
+                stop_housekeeping.set()
+                housekeeping_thread.join()
+
+    @staticmethod
+    def request_periodic_housekeeping(
+        account: Account, deltachat: DeltaChat, stop: Event
+    ) -> None:
+        while not stop.wait(HOUSEKEEPING_INTERVAL_SECONDS):
+            try:
+                account.set_config("last_housekeeping", None)
+                deltachat.maybe_network()
+            except JsonRpcError as error:
+                logger.error("Failed to request Delta Chat housekeeping: %s", error)
 
     def cleanup_sent_messages(self, account) -> set[int]:
         pending = set()
